@@ -6,12 +6,8 @@ const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
   globalIgnores([
-    "dist/**",
-    ".vinext/**",
-    ".wrangler/**",
-    ".sites-runtime/**",
-    "outputs/**",
-    "work/**",
+    ".next/**",
+    ".netlify/**",
   ]),
   {
     files: ["components/ui/**/*.{ts,tsx}", "hooks/use-mobile.ts"],

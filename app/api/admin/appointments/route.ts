@@ -1,11 +1,15 @@
-import { blocks,dateInRange,db,fail,getSettings,isAdmin,validDate } from '@/lib/booking';
+import { asc, eq, gte } from 'drizzle-orm';
+import { db } from '@/db';
+import { appointments, occupiedBlocks } from '@/db/schema';
+import { dateInRange,fail,getSettings,isAdmin,reserve,validDate } from '@/lib/booking';
 export const dynamic='force-dynamic';
 export async function GET(request:Request) {
  if(!(await isAdmin()))return fail('Acesso restrito.',403);
  const from=new URL(request.url).searchParams.get('from')||'';
  if(!validDate(from))return fail('Data inválida.');
- const rows=await db().prepare('SELECT * FROM appointments WHERE date>=? ORDER BY date,start_minute LIMIT 300').bind(from).all();
- return Response.json({appointments:rows.results,settings:await getSettings()},{headers:{'Cache-Control':'no-store'}});
+ const rows=await db.select().from(appointments).where(gte(appointments.date,from)).orderBy(asc(appointments.date),asc(appointments.startMinute)).limit(300);
+ const list=rows.map(r=>({id:r.id,date:r.date,start_minute:r.startMinute,end_minute:r.endMinute,service_name:r.serviceName,mode:r.mode,customer_name:r.customerName,phone:r.phone,neighborhood:r.neighborhood,status:r.status,created_at:r.createdAt}));
+ return Response.json({appointments:list,settings:await getSettings()},{headers:{'Cache-Control':'no-store'}});
 }
 export async function POST(request:Request) {
  if(!(await isAdmin()))return fail('Acesso restrito.',403);
@@ -16,20 +20,20 @@ export async function POST(request:Request) {
   const {hours}=await getSettings(),day=hours[new Date(date+'T12:00:00Z').getUTCDay()];
   if(!day?.open||start<day.start||start+duration>day.end)return fail('Horário fora do expediente.');
   const id=crypto.randomUUID();
-  try{await db().batch([
-    db().prepare('INSERT INTO appointments(id,date,start_minute,end_minute,service_name,mode,status,created_at) VALUES(?,?,?,?,?,?,?,?)').bind(id,date,start,start+duration,'Horário bloqueado','—','blocked',new Date().toISOString()),
-    ...blocks(date,start,duration,id)
-   ]);}catch{return fail('Horário já ocupado.',409);}
+  try{await reserve({id,date,startMinute:start,endMinute:start+duration,serviceName:'Horário bloqueado',mode:'—',status:'blocked',createdAt:new Date().toISOString()});}catch{return fail('Horário já ocupado.',409);}
   return Response.json({ok:true});
  }
  const id=String(body.id||''),status=String(body.status||'');
  if(!id||!['confirmed','cancelled','completed','pending'].includes(status))return fail('Ação inválida.');
- const current=await db().prepare('SELECT status FROM appointments WHERE id=?').bind(id).first<{status:string}>();
+ const [current]=await db.select({status:appointments.status}).from(appointments).where(eq(appointments.id,id));
  if(!current)return fail('Agendamento não encontrado.',404);
  if(status==='cancelled') {
-  await db().batch([db().prepare('UPDATE appointments SET status=? WHERE id=?').bind(status,id),db().prepare('DELETE FROM occupied_blocks WHERE appointment_id=?').bind(id)]);
+  await db.transaction(async tx=>{
+   await tx.update(appointments).set({status}).where(eq(appointments.id,id));
+   await tx.delete(occupiedBlocks).where(eq(occupiedBlocks.appointmentId,id));
+  });
  }else if(current.status==='cancelled')return fail('Um horário cancelado não pode ser reaberto. Crie uma nova reserva.');
  else if(current.status==='blocked')return fail('Desbloqueie esse horário usando Cancelar.');
- else await db().prepare('UPDATE appointments SET status=? WHERE id=?').bind(status,id).run();
+ else await db.update(appointments).set({status}).where(eq(appointments.id,id));
  return Response.json({ok:true});
 }
